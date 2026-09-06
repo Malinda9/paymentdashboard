@@ -24,10 +24,137 @@ button{width:100%;height:58px;border:0;border-radius:17px;background:linear-grad
 <button id="btn" onclick="login()">🔐 ចូលប្រើប្រាស់</button>
 <div class="foot">PC • Mobile • Tablet · 2026–2027</div></main>
 <script>
-const API='/api/teacher';const $=id=>document.getElementById(id);
-async function api(body){const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json','Cache-Control':'no-cache'},body:JSON.stringify(body),cache:'no-store'});let d={};try{d=await r.json()}catch(e){throw Error('Server មិនបានបញ្ជូន JSON ត្រឹមត្រូវ')}if(!r.ok||d.success===false)throw Error(d.message||'Login មិនបានជោគជ័យ');return d}
-function msg(t){$('msg').textContent=t;$('msg').style.display='block'}
-async function login(){const username=$('u').value.trim(),password=$('p').value;if(!username||!password){msg('សូមបំពេញ Username និង Password ជាមុនសិន។');return}$('btn').disabled=true;$('btn').textContent='កំពុងផ្ទៀងផ្ទាត់...';$('msg').style.display='none';try{const d=await api({action:'login',username,password});const token=d.token||'',user=d.user||{};if(!token)throw Error('មិនមាន Session Token');localStorage.setItem('unifiedPortalToken',token);localStorage.setItem('unifiedPortalUser',JSON.stringify(user));localStorage.setItem('teacherPortalToken',token);localStorage.setItem('teacherPortalUser',JSON.stringify(user));window.location.href=String(user.role||'').toLowerCase()==='admin'?'/admin.html':'/teacher.html'}catch(e){msg(e.message)}finally{$('btn').disabled=false;$('btn').textContent='🔐 ចូលប្រើប្រាស់'}}
-async function restore(){const token=localStorage.getItem('unifiedPortalToken');if(!token)return;try{const d=await api({action:'me',token});const user=d.data?.user||{};localStorage.setItem('unifiedPortalUser',JSON.stringify(user));window.location.href=String(user.role||'').toLowerCase()==='admin'?'/admin.html':'/teacher.html'}catch(e){localStorage.removeItem('unifiedPortalToken');localStorage.removeItem('unifiedPortalUser')}}
-$('p').addEventListener('keydown',e=>{if(e.key==='Enter')login()});window.addEventListener('load',restore);if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+const API='/api/teacher';
+const $=id=>document.getElementById(id);
+const TOKEN_KEYS=['unifiedPortalToken','teacherPortalToken'];
+const USER_KEYS=['unifiedPortalUser','teacherPortalUser'];
+
+function getSavedToken(){
+  for(const k of TOKEN_KEYS){
+    const v=localStorage.getItem(k);
+    if(v && v.trim()) return v.trim();
+  }
+  return '';
+}
+function getSavedUser(){
+  for(const k of USER_KEYS){
+    const v=localStorage.getItem(k);
+    if(!v) continue;
+    try{return JSON.parse(v)||{};}catch(e){}
+  }
+  return {};
+}
+function saveSession(token,user){
+  if(token) TOKEN_KEYS.forEach(k=>localStorage.setItem(k,token));
+  if(user) USER_KEYS.forEach(k=>localStorage.setItem(k,JSON.stringify(user)));
+}
+function clearSession(){
+  TOKEN_KEYS.forEach(k=>localStorage.removeItem(k));
+  USER_KEYS.forEach(k=>localStorage.removeItem(k));
+}
+
+async function api(body){
+  const r=await fetch(API,{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Accept':'application/json','Cache-Control':'no-cache'},
+    body:JSON.stringify(body),
+    cache:'no-store'
+  });
+  let d={};
+  try{d=await r.json();}
+  catch(e){throw Error('Server មិនបានបញ្ជូន JSON ត្រឹមត្រូវ');}
+  if(!r.ok || d.success===false) {
+    const err=new Error(d.message||'Request មិនបានជោគជ័យ');
+    err.status=r.status;
+    throw err;
+  }
+  return d;
+}
+
+function msg(t){$('msg').textContent=t;$('msg').style.display='block';}
+function showChecking(){
+  $('msg').textContent='កំពុងពិនិត្យ Session...';
+  $('msg').style.display='block';
+  $('btn').disabled=true;
+  $('btn').textContent='កំពុងពិនិត្យ...';
+}
+function showLogin(){
+  $('msg').style.display='none';
+  $('btn').disabled=false;
+  $('btn').textContent='🔐 ចូលប្រើប្រាស់';
+}
+function routeForUser(user){
+  return String(user?.role||'').trim().toLowerCase()==='admin' ? '/admin.html' : '/teacher.html';
+}
+
+async function login(){
+  const username=$('u').value.trim(),password=$('p').value;
+  if(!username||!password){msg('សូមបំពេញ Username និង Password ជាមុនសិន។');return;}
+  $('btn').disabled=true;
+  $('btn').textContent='កំពុងផ្ទៀងផ្ទាត់...';
+  $('msg').style.display='none';
+  try{
+    const d=await api({action:'login',username,password});
+    const token=d.token||'',user=d.user||{};
+    if(!token) throw Error('មិនមាន Session Token');
+    saveSession(token,user);
+    window.location.replace(routeForUser(user));
+  }catch(e){
+    msg(e.message||'Login មិនបានជោគជ័យ');
+  }finally{
+    if(document.visibilityState!=='hidden'){
+      $('btn').disabled=false;
+      $('btn').textContent='🔐 ចូលប្រើប្រាស់';
+    }
+  }
+}
+
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+
+async function restore(){
+  const token=getSavedToken();
+  const savedUser=getSavedUser();
+
+  if(!token){showLogin();return;}
+
+  showChecking();
+
+  // If we already know the role, prepare the correct destination.
+  // We still verify the token with the backend before redirecting.
+  let lastErr=null;
+  for(let attempt=1;attempt<=3;attempt++){
+    try{
+      const d=await api({action:'me',token});
+      const user=d?.data?.user || d?.user || savedUser || {};
+      if(!user.role) throw Error('Session User មិនត្រឹមត្រូវ');
+      saveSession(token,user);
+      window.location.replace(routeForUser(user));
+      return;
+    }catch(e){
+      lastErr=e;
+      // Network / temporary server errors should not immediately destroy
+      // a valid local session.
+      if(e.status===401 || e.status===403){
+        clearSession();
+        showLogin();
+        msg('Session ផុតកំណត់។ សូម Login ម្តងទៀត។');
+        return;
+      }
+      if(attempt<3) await sleep(700*attempt);
+    }
+  }
+
+  // Keep the session if the backend is temporarily unreachable.
+  // The teacher page can retry after loading.
+  showLogin();
+  msg((lastErr&&lastErr.message) || 'មិនអាចពិនិត្យ Session បានទេ។ សូមសាកល្បងម្ដងទៀត។');
+}
+
+$('p').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+window.addEventListener('load',restore);
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('/sw.js?v=20260906-2').catch(()=>{});
+  });
+}
 </script></body></html>
