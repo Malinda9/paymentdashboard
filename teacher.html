@@ -781,6 +781,8 @@
         showLoginError('Session ផុតកំណត់។ សូម Login ម្តងទៀត។');
         return;
       }
+      // Ask the backend for a precise diagnostic so the problem is visible.
+      await runHealthCheck();
     }
 
     try{
@@ -806,6 +808,23 @@
     if(hadError){
       console.error('Teacher Portal partial load error:', firstError);
       toast((firstError && firstError.message) || 'ទិន្នន័យមួយចំនួនមិនអាចទាញបានទេ។ សូម Refresh ម្តងទៀត។');
+    }
+  }
+
+  async function runHealthCheck(){
+    try{
+      const res = await api('health');
+      console.log('Teacher Portal Health:', res.data);
+      const d = res.data || {};
+      const msg = d.ok
+        ? `Teacher API Connected ✓ | Students_Payment: ${d.rows} rows | columns: ${d.columns}`
+        : (d.message || 'Students_Payment មិនអាចប្រើបាន');
+      toast(msg);
+      return d;
+    }catch(err){
+      console.error('Teacher Portal Health Check failed:', err);
+      toast('Health Check: ' + (err.message || 'API error'));
+      return null;
     }
   }
 
