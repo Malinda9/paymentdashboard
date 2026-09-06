@@ -363,37 +363,16 @@ function teacherPortalIsAdmin_(session) {
 }
 
 function teacherPortalCanAccessClass_(session, className) {
-
   if (!session) return false;
 
-  // Admin = គ្រប់ថ្នាក់
-  if (teacherPortalIsAdmin_(session)) {
+  // User requested that all teachers can view all classes.
+  var role = String(session.role || '').toLowerCase();
+
+  if (role === 'teacher' || role === 'admin') {
     return true;
   }
 
-  // Teacher = គ្រប់ថ្នាក់
-  if (String(session.role || '').toLowerCase() === 'teacher') {
-    return true;
-  }
-
-  // ALL = គ្រប់ថ្នាក់
-  var allowed = session.allowedClasses || [];
-
-  var hasAll = allowed.some(function(c) {
-    return String(c || '').trim().toUpperCase() === 'ALL';
-  });
-
-  if (hasAll) {
-    return true;
-  }
-
-  var target = String(className || '')
-    .trim()
-    .toLowerCase();
-
-  return allowed.some(function(c) {
-    return String(c || '').trim().toLowerCase() === target;
-  });
+  return false;
 }
 
 // ----------------------------------------------------------
