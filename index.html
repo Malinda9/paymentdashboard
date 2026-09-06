@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <meta name="theme-color" content="#2563eb">
-  <title>Teacher Portal</title>
+  <title>Teacher Portal • បឋមសិក្សាសម្តេចព្រះរាជអគ្គមហេសី</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -296,6 +296,11 @@
 </head>
 
 <body>
+  <noscript>
+    <div style="padding:20px;background:#fff1f2;color:#991b1b;text-align:center;font-family:Arial,sans-serif;">
+      សូមបើក JavaScript ដើម្បីប្រើ Teacher Portal។
+    </div>
+  </noscript>
 
   <!-- LOGIN -->
   <section id="loginPage">
@@ -341,7 +346,7 @@
         <div class="brand">
           <div class="brand-logo"><img src="https://lh3.googleusercontent.com/d/1wkwC994Ybybe2TUoE-h-gNIxfZQyYvY" alt="Logo"></div>
           <div>
-            <div class="brand-title">ប្រព័ន្ធគ្រប់គ្រងការបង់ប្រាក់</div>
+            <div class="brand-title">បឋមសិក្សាសម្តេចព្រះរាជអគ្គមហេសី</div>
             <div class="brand-sub">Teacher Portal</div>
           </div>
         </div>
@@ -384,7 +389,7 @@
 
         <header class="topbar">
           <div class="top-left">
-            <h1>វិទ្យាល័យបឋមសិក្សា អគ្គមហេសី ២០២៦–២០២៧</h1>
+            <h1>បឋមសិក្សាសម្តេចព្រះរាជអគ្គមហេសី ២០២៦–២០២៧</h1>
             <p>ប្រព័ន្ធតាមដាន និងត្រួតពិនិត្យការបង់ប្រាក់សិស្ស</p>
           </div>
           <div class="top-actions">
@@ -523,6 +528,10 @@
             </div>
           </section>
 
+          <div style="text-align:center;color:#9aa8ba;font-size:11px;padding:18px 0 4px;">
+            បឋមសិក្សាសម្តេចព្រះរាជអគ្គមហេសី • Teacher Portal • ២០២៦–២០២៧
+          </div>
+
         </div>
       </main>
     </div>
@@ -588,26 +597,59 @@
   }
 
   async function api(action, extra={}){
-    const body = { action, ...extra };
-    if(action !== 'login') body.token = token;
+    const body = Object.assign({action:String(action || '').toLowerCase()}, extra || {});
 
-    const res = await fetch(API_URL, {
-      method:'POST',
-      headers:{'Content-Type':'application/json','Accept':'application/json'},
-      body:JSON.stringify(body),
-      cache:'no-store'
-    });
-
-    let data = {};
-    try { data = await res.json(); } catch(e) {
-      throw new Error('Server មិនបានបញ្ជូន JSON ត្រឹមត្រូវ។');
+    if(body.action !== 'login'){
+      if(!token){
+        const err = new Error('Session មិនមានទេ។ សូម Login ម្តងទៀត។');
+        err.status = 401;
+        throw err;
+      }
+      body.token = token;
     }
 
-    if(!res.ok || data.success === false){
-      const err = new Error(data.message || 'Request failed.');
+    let res;
+    try{
+      res = await fetch(API_URL, {
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'Accept':'application/json',
+          'Cache-Control':'no-cache'
+        },
+        body:JSON.stringify(body),
+        cache:'no-store'
+      });
+    }catch(networkErr){
+      const err = new Error('មិនអាចភ្ជាប់ទៅ Teacher API បានទេ។ សូមពិនិត្យ Vercel Deployment និង APPS_SCRIPT_URL។');
+      err.status = 0;
+      throw err;
+    }
+
+    const text = await res.text();
+    let data = null;
+
+    try{
+      data = text ? JSON.parse(text) : null;
+    }catch(parseErr){
+      console.error('API non-JSON response:', text);
+      const err = new Error('Google Apps Script / Teacher API មិនបានបញ្ជូន JSON ត្រឹមត្រូវ។');
       err.status = res.status;
       throw err;
     }
+
+    if(!data || typeof data !== 'object'){
+      const err = new Error('Server បានបញ្ជូនទិន្នន័យទទេ ឬមិនត្រឹមត្រូវ។');
+      err.status = res.status;
+      throw err;
+    }
+
+    if(!res.ok || data.success === false){
+      const err = new Error(data.message || ('Request failed (' + res.status + ').'));
+      err.status = res.status || Number(data.httpStatus || 0);
+      throw err;
+    }
+
     return data;
   }
 
@@ -638,9 +680,19 @@
       localStorage.setItem('teacherPortalUser', JSON.stringify(currentUser || {}));
 
       openApp();
-      await loadAll();
+
+      try{
+        await loadAll();
+      }catch(loadErr){
+        console.error(loadErr);
+        // Login itself succeeded, but data loading failed.
+        // Keep the teacher logged in and show a clear message.
+        toast(loadErr.message || 'Login បានជោគជ័យ ប៉ុន្តែមិនអាចទាញទិន្នន័យបានទេ។');
+      }
+
       toast('ចូលប្រើប្រាស់បានជោគជ័យ ✓');
     }catch(err){
+      closeApp();
       showLoginError(err.message || 'Login មិនបានជោគជ័យ។');
     }finally{
       btn.disabled = false;
@@ -713,6 +765,12 @@
   }
 
   async function refreshAll(){
+    if(!token){
+      closeApp();
+      showLoginError('សូម Login មុនពេល Refresh ទិន្នន័យ។');
+      return;
+    }
+
     await loadAll();
     toast('បានធ្វើ Refresh ទិន្នន័យ ✓');
   }
@@ -886,7 +944,7 @@
         </div>
 
         <div class="history-title">ប្រវត្តិបង់ប្រាក់</div>
-        <div id="history-${esc(student.id || '')}">
+        <div id="history-${String(student.id || '').replace(/[^a-zA-Z0-9_-]/g,'')}">
           <div class="empty" style="padding:25px"><i class="fa-solid fa-spinner fa-spin"></i><div>កំពុងទាញប្រវត្តិ...</div></div>
         </div>
       </article>
@@ -900,7 +958,7 @@
     try{
       const res = await api('history',{id});
       const rows = Array.isArray(res.data) ? res.data : [];
-      const box = document.getElementById('history-' + CSS.escape(id));
+      const box = document.getElementById('history-' + String(id).replace(/[^a-zA-Z0-9_-]/g,''));
       if(!box) return;
 
       if(!rows.length){
@@ -926,7 +984,7 @@
         </div>
       `;
     }catch(err){
-      const box = document.getElementById('history-' + CSS.escape(id));
+      const box = document.getElementById('history-' + String(id).replace(/[^a-zA-Z0-9_-]/g,''));
       if(box) box.innerHTML = `<div class="empty" style="padding:25px;color:#dc2626">${esc(err.message)}</div>`;
     }
   }
@@ -958,26 +1016,34 @@
     $('mobileDate').textContent = date;
   }
 
-  async function restoreSession(){
-    if(!token) return;
+  function restoreSession(){
+    // IMPORTANT:
+    // Teacher Portal must always start at the Login page.
+    // Do NOT auto-open Dashboard from an old localStorage token.
+    token = '';
+    currentUser = null;
+    dashboard = null;
+    classesData = {};
 
-    try{
-      const res = await api('me');
-      currentUser = res.data?.user || JSON.parse(localStorage.getItem('teacherPortalUser') || '{}');
-      openApp();
-      await loadAll();
-    }catch(err){
-      token = '';
-      localStorage.removeItem('teacherPortalToken');
-      localStorage.removeItem('teacherPortalUser');
-    }
+    localStorage.removeItem('teacherPortalToken');
+    localStorage.removeItem('teacherPortalUser');
+
+    closeApp();
+
+    setTimeout(function(){
+      const u = $('username');
+      if(u) u.focus();
+    }, 80);
   }
 
-  $('password').addEventListener('keydown', e => {
+  $('password').addEventListener('keydown', function(e){
     if(e.key === 'Enter') login();
   });
 
-  window.addEventListener('DOMContentLoaded', restoreSession);
+  window.addEventListener('DOMContentLoaded', function(){
+    restoreSession();
+    startClock();
+  });
 </script>
 
 </body>
