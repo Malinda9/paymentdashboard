@@ -1,7 +1,9 @@
-// ==========================================================
-// VERCEL SERVERLESS FUNCTION — PHASE 3A
-// Teacher Portal API
-// ==========================================================
+// api/teacher.js
+// Vercel Serverless Function
+// Teacher Portal API -> Google Apps Script
+//
+// This version supports GET and POST from the frontend,
+// forwards the session token, and sends POST to Apps Script.
 
 const ALLOWED_ACTIONS = new Set([
   'login',
@@ -12,367 +14,122 @@ const ALLOWED_ACTIONS = new Set([
   'history'
 ]);
 
-const JSON_HEADERS = {
-  'Content-Type': 'application/json; charset=utf-8',
-  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-  'Pragma': 'no-cache',
-  'Expires': '0'
-};
-
-function sendJson(res, status, body) {
-  Object.entries(JSON_HEADERS).forEach(([key, value]) => {
-    res.setHeader(key, value);
-  });
-
-  return res.status(status).json(body);
-}
-
-function getRequestData(req) {
-
-  // POST JSON body
-  if (req && req.body && typeof req.body === 'object') {
-    return req.body;
-  }
-
-  // POST body as JSON string
-  if (req && typeof req.body === 'string' && req.body.trim()) {
-    try {
-      return JSON.parse(req.body);
-    } catch (e) {
-      return {};
-    }
-  }
-
-  // GET fallback for older Teacher Portal
-  return req && req.query ? req.query : {};
-}
-
-function buildPayload(data, action) {
-
-  const payload = {
-    action: action
-  };
-
-  // LOGIN
-  if (action === 'login') {
-
-    payload.username = String(
-      data.username || ''
-    ).trim();
-
-    payload.password = String(
-      data.password || ''
-    );
-
-  } else {
-
-    // Protected actions
-    payload.token = String(
-      data.token || ''
-    ).trim();
-  }
-
-  // Student / History
-  if (
-    action === 'student' ||
-    action === 'history'
-  ) {
-
-    payload.id = String(
-      data.id || ''
-    ).trim();
-  }
-
-  return payload;
-}
-
 module.exports = async function handler(req, res) {
-
-  // ========================================================
-  // CORS
-  // ========================================================
-
-  res.setHeader(
-    'Access-Control-Allow-Origin',
-    '*'
-  );
-
-  res.setHeader(
-    'Access-Control-Allow-Methods',
-    'GET, POST, OPTIONS'
-  );
-
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'Content-Type, Authorization'
-  );
-
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-
-  // ========================================================
-  // GOOGLE APPS SCRIPT URL
-  // ========================================================
-
-  const appsScriptUrl =
-    String(
-      process.env.APPS_SCRIPT_URL || ''
-    ).trim();
-
-  if (!appsScriptUrl) {
-
-    return sendJson(res, 500, {
-
-      success: false,
-
-      message:
-        'APPS_SCRIPT_URL is not configured.'
-    });
-  }
-
   try {
+    const method = String(req.method || 'GET').toUpperCase();
 
-    // ======================================================
-    // READ REQUEST
-    // ======================================================
+    // Read request data from either GET query or POST body.
+    let params = {};
 
-    const data =
-      getRequestData(req);
+    if (method === 'POST') {
+      if (req.body && typeof req.body === 'object') {
+        params = req.body;
+      } else {
+        params = {};
+      }
+    } else {
+      params = req.query || {};
+    }
 
-    const action =
-      String(
-        data.action || ''
-      )
-      .trim()
-      .toLowerCase();
-
-    // ======================================================
-    // VALIDATE ACTION
-    // ======================================================
+    const action = String(params.action || '').trim().toLowerCase();
 
     if (!ALLOWED_ACTIONS.has(action)) {
-
-      return sendJson(res, 400, {
-
+      return res.status(400).json({
         success: false,
-
-        message:
-          'Invalid teacher API action.',
-
-        allowedActions:
-          Array.from(ALLOWED_ACTIONS)
+        message: 'Invalid teacher API action.'
       });
     }
 
-    // ======================================================
-    // BUILD PAYLOAD
-    // ======================================================
+    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
 
-    const payload =
-      buildPayload(
-        data,
-        action
-      );
+    if (!appsScriptUrl) {
+      return res.status(500).json({
+        success: false,
+        message: 'APPS_SCRIPT_URL is not configured.'
+      });
+    }
 
-    // ======================================================
-    // LOGIN VALIDATION
-    // ======================================================
+    const body = {
+      action: action
+    };
 
+    // Login fields
     if (action === 'login') {
+      body.username = String(params.username || '').trim();
+      body.password = String(params.password || '');
 
-      if (
-        !payload.username ||
-        !payload.password
-      ) {
-
-        return sendJson(res, 400, {
-
+      if (!body.username || !body.password) {
+        return res.status(400).json({
           success: false,
+          message: 'Username និង Password ត្រូវបានទាមទារ។'
+        });
+      }
+    } else {
+      // Session token for all protected requests.
+      body.token = String(params.token || '').trim();
 
-          message:
-            'Username និង Password ត្រូវបានទាមទារ។'
+      if (!body.token) {
+        return res.status(401).json({
+          success: false,
+          message: 'Session token មិនមាន។ សូម Login ម្តងទៀត។'
         });
       }
     }
 
-    // ======================================================
-    // SESSION TOKEN VALIDATION
-    // ======================================================
+    // Student ID is required for student/history.
+    if (action === 'student' || action === 'history') {
+      body.id = String(params.id || '').trim();
 
-    if (
-      action !== 'login' &&
-      !payload.token
-    ) {
-
-      return sendJson(res, 401, {
-
-        success: false,
-
-        message:
-          'Session token ត្រូវបានទាមទារ។ សូម Login ម្តងទៀត។'
-      });
+      if (!body.id) {
+        return res.status(400).json({
+          success: false,
+          message: 'Student ID is required.'
+        });
+      }
     }
 
-    // ======================================================
-    // STUDENT ID VALIDATION
-    // ======================================================
+    const upstream = await fetch(appsScriptUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(body),
+      redirect: 'follow',
+      cache: 'no-store'
+    });
 
-    if (
-      (
-        action === 'student' ||
-        action === 'history'
-      ) &&
-      !payload.id
-    ) {
+    const text = await upstream.text();
 
-      return sendJson(res, 400, {
-
-        success: false,
-
-        message:
-          'Student ID is required.'
-      });
-    }
-
-    // ======================================================
-    // SEND TO GOOGLE APPS SCRIPT
-    // ======================================================
-
-    const upstream =
-      await fetch(
-        appsScriptUrl,
-        {
-
-          method: 'POST',
-
-          headers: {
-
-            'Content-Type':
-              'application/json',
-
-            'Accept':
-              'application/json'
-          },
-
-          body:
-            JSON.stringify(payload),
-
-          redirect:
-            'follow',
-
-          cache:
-            'no-store'
-        }
-      );
-
-    // ======================================================
-    // READ RESPONSE
-    // ======================================================
-
-    const text =
-      await upstream.text();
-
-    if (!text) {
-
-      return sendJson(res, 502, {
-
-        success: false,
-
-        message:
-          'Google Apps Script returned an empty response.',
-
-        upstreamStatus:
-          upstream.status
-      });
-    }
-
-    // ======================================================
-    // PARSE JSON
-    // ======================================================
-
-    let result;
+    let data;
 
     try {
-
-      result =
-        JSON.parse(text);
-
+      data = JSON.parse(text);
     } catch (e) {
+      console.error('Apps Script response:', text);
 
-      console.error(
-        'Invalid JSON from Apps Script:',
-        text
-      );
-
-      return sendJson(res, 502, {
-
+      return res.status(502).json({
         success: false,
-
-        message:
-          'Google Apps Script did not return valid JSON.',
-
-        upstreamStatus:
-          upstream.status
+        message: 'Google Apps Script did not return valid JSON.',
+        upstreamStatus: upstream.status
       });
     }
 
-    // ======================================================
-    // HTTP STATUS FROM APPS SCRIPT
-    // ======================================================
-
-    let status =
-      Number(
-        result &&
-        result.httpStatus
-      );
-
-    if (
-      !Number.isInteger(status) ||
-      status < 200 ||
-      status > 599
-    ) {
-
-      status =
-        upstream.ok
-          ? 200
-          : 502;
-    }
-
-    // Remove internal httpStatus
-    delete result.httpStatus;
-
-    // ======================================================
-    // RETURN RESPONSE
-    // ======================================================
-
-    return sendJson(
-      res,
-      status,
-      result
+    res.setHeader(
+      'Cache-Control',
+      'no-store, max-age=0, must-revalidate'
     );
+
+    return res
+      .status(upstream.ok ? 200 : upstream.status || 502)
+      .json(data);
 
   } catch (error) {
+    console.error('Teacher API error:', error);
 
-    console.error(
-      'Teacher API error:',
-      error
-    );
-
-    return sendJson(res, 500, {
-
+    return res.status(500).json({
       success: false,
-
-      message:
-        'Teacher API request failed.',
-
-      error:
-        String(
-          error &&
-          error.message
-            ? error.message
-            : error
-        )
+      message: 'Teacher API request failed.'
     });
   }
 };
