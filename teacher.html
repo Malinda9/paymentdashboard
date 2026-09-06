@@ -1034,28 +1034,49 @@
     }
     token = savedToken;
     try{ currentUser = savedUser ? JSON.parse(savedUser) : null; }catch(e){ currentUser = null; }
-    try{
-      const me = await api('me');
-      currentUser = me.data?.user || currentUser;
-      if(String(currentUser?.role || '').toLowerCase() !== 'teacher'){
-        window.location.href = '/admin.html';
+
+    let lastErr = null;
+    for(let attempt=1; attempt<=3; attempt++){
+      try{
+        const me = await api('me');
+        currentUser = me.data?.user || currentUser;
+        if(String(currentUser?.role || '').toLowerCase() !== 'teacher'){
+          window.location.replace('/admin.html');
+          return;
+        }
+        localStorage.setItem('unifiedPortalToken', token);
+        localStorage.setItem('unifiedPortalUser', JSON.stringify(currentUser || {}));
+        localStorage.setItem('teacherPortalToken', token);
+        localStorage.setItem('teacherPortalUser', JSON.stringify(currentUser || {}));
+        openApp();
+        await loadAll();
         return;
+      }catch(err){
+        lastErr = err;
+        // Only remove the saved session when Apps Script explicitly says
+        // the token is unauthorized. Temporary network/server errors keep it.
+        if(err.status === 401 || err.status === 403){
+          token=''; currentUser=null;
+          localStorage.removeItem('unifiedPortalToken');
+          localStorage.removeItem('unifiedPortalUser');
+          localStorage.removeItem('teacherPortalToken');
+          localStorage.removeItem('teacherPortalUser');
+          closeApp();
+          showLoginError('Session ផុតកំណត់។ សូម Login ម្តងទៀត។');
+          const u = $('username');
+          if(u) u.focus();
+          return;
+        }
+        if(attempt < 3){
+          await new Promise(r => setTimeout(r, 700 * attempt));
+        }
       }
-      localStorage.setItem('unifiedPortalUser', JSON.stringify(currentUser || {}));
-      localStorage.setItem('teacherPortalToken', token);
-      localStorage.setItem('teacherPortalUser', JSON.stringify(currentUser || {}));
-      openApp();
-      await loadAll();
-    }catch(err){
-      token=''; currentUser=null;
-      localStorage.removeItem('unifiedPortalToken');
-      localStorage.removeItem('unifiedPortalUser');
-      localStorage.removeItem('teacherPortalToken');
-      localStorage.removeItem('teacherPortalUser');
-      closeApp();
-      const u = $('username');
-      if(u) u.focus();
     }
+
+    // Backend temporarily unavailable: keep the local token and show a
+    // retryable message instead of forcing the teacher to Login again.
+    closeApp();
+    showLoginError(lastErr?.message || 'មិនអាចពិនិត្យ Session បានទេ។ សូម Refresh ម្តងទៀត។');
   }
 
   $('password').addEventListener('keydown', function(e){
