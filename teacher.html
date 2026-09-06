@@ -744,32 +744,68 @@
 
   async function loadAll(){
     setLoading(true,'កំពុងទាញទិន្នន័យ...');
+
+    let hadError = false;
+    let firstError = null;
+
+    // Load each API independently. Previously Promise.all() meant that
+    // one failed endpoint (especially classes) prevented the dashboard
+    // statistics from rendering at all, leaving every card as "...".
     try{
-      const [meRes, dashRes, classRes] = await Promise.all([
-        api('me'),
-        api('dashboard'),
-        api('classes')
-      ]);
-
+      const meRes = await api('me');
       currentUser = meRes.data?.user || currentUser;
-      dashboard = dashRes.data || {};
-      classesData = classRes.data || {};
-
       localStorage.setItem('teacherPortalUser', JSON.stringify(currentUser || {}));
-
       renderUser();
-      renderDashboard();
-      renderClasses();
-      renderStats();
     }catch(err){
+      hadError = true;
+      firstError = firstError || err;
       if(err.status === 401){
+        setLoading(false);
         logout();
         showLoginError('Session ផុតកំណត់។ សូម Login ម្តងទៀត។');
-      }else{
-        toast(err.message || 'មិនអាចទាញទិន្នន័យបានទេ។');
+        return;
       }
-    }finally{
-      setLoading(false);
+    }
+
+    try{
+      const dashRes = await api('dashboard');
+      dashboard = dashRes.data || {};
+      renderDashboard();
+      renderStats();
+    }catch(err){
+      hadError = true;
+      firstError = firstError || err;
+      if(err.status === 401){
+        setLoading(false);
+        logout();
+        showLoginError('Session ផុតកំណត់។ សូម Login ម្តងទៀត។');
+        return;
+      }
+    }
+
+    try{
+      const classRes = await api('classes');
+      classesData = classRes.data || {};
+      renderClasses();
+    }catch(err){
+      hadError = true;
+      firstError = firstError || err;
+      if(err.status === 401){
+        setLoading(false);
+        logout();
+        showLoginError('Session ផុតកំណត់។ សូម Login ម្តងទៀត។');
+        return;
+      }
+      // Keep the dashboard usable even if class data has a temporary error.
+      classesData = classesData || {};
+      renderClasses();
+    }
+
+    setLoading(false);
+
+    if(hadError){
+      console.error('Teacher Portal partial load error:', firstError);
+      toast((firstError && firstError.message) || 'ទិន្នន័យមួយចំនួនមិនអាចទាញបានទេ។ សូម Refresh ម្តងទៀត។');
     }
   }
 
