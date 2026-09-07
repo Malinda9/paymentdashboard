@@ -22,7 +22,7 @@ module.exports = async function handler(req,res){
     }else{
       body.token=String(params.token||'').trim();
       if(!body.token)return res.status(401).json({success:false,message:'Session token មិនមាន។'});
-      for(const k of ['id','rowNumber','username','active']) if(params[k]!==undefined) body[k]=params[k];
+      for(const k of ['id','rowNumber','username','active','date','month','query']) if(params[k]!==undefined) body[k]=params[k];
       for(const k of ['filters','student','payment','user']) if(params[k]!==undefined) body[k]=params[k];
     }
     const upstream=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify(body),redirect:'follow',cache:'no-store'});
