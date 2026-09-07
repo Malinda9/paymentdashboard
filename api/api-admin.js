@@ -3,7 +3,8 @@ const ALLOWED = new Set([
   'login','me','admin_dashboard','admin_students','admin_student',
   'admin_save_student','admin_archive_student','admin_payments',
   'admin_save_payment','admin_delete_payment','admin_teachers',
-  'admin_users','admin_save_user','admin_toggle_user','admin_export_csv'
+  'admin_users','admin_save_user','admin_toggle_user','admin_export_csv',
+  'admin_daily_report','admin_monthly_report'
 ]);
 module.exports = async function handler(req,res){
   try{
