@@ -21,7 +21,8 @@ const ALLOWED_ACTIONS = new Set([
   'dashboard',
   'classes',
   'student',
-  'history'
+  'history',
+  'health'
 ]);
 
 const JSON_HEADERS = {
