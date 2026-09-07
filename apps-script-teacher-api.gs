@@ -68,6 +68,8 @@ function doPost(e) {
     if (action === 'admin_save_user') return tpJson_(adminPortalSaveUser_(body.user || {}),200);
     if (action === 'admin_toggle_user') return tpJson_(adminPortalToggleUser_(body.username, body.active),200);
     if (action === 'admin_export_csv') return tpJson_(adminPortalExportCsv_(body.filters || {}),200);
+    if (action === 'admin_daily_report') return tpJson_({success:true,data:adminPortalDailyReport_(body.date)},200);
+    if (action === 'admin_monthly_report') return tpJson_({success:true,data:adminPortalMonthlyReport_(body.month)},200);
 
     return tpJson_({success:false,message:'Action មិនត្រូវបានអនុញ្ញាត។'},400);
   } catch (err) {
@@ -669,41 +671,6 @@ function teacherPortalClasses_(session) {
   return groups;
 }
 
-function teacherPortalCanAccessClass_(session, className) {
-
-  if (!session) return false;
-
-  // Admin = គ្រប់ថ្នាក់
-  if (teacherPortalIsAdmin_(session)) {
-    return true;
-  }
-
-  // Teacher = គ្រប់ថ្នាក់
-  if (String(session.role || '').toLowerCase() === 'teacher') {
-    return true;
-  }
-
-  // ALL = គ្រប់ថ្នាក់
-  var allowed = session.allowedClasses || [];
-
-  var hasAll = allowed.some(function(c) {
-    return String(c || '').trim().toUpperCase() === 'ALL';
-  });
-
-  if (hasAll) {
-    return true;
-  }
-
-  var target = String(className || '')
-    .trim()
-    .toLowerCase();
-
-  return allowed.some(function(c) {
-    return String(c || '').trim().toLowerCase() === target;
-  });
-}
-
-
 // ----------------------------------------------------------
 // STUDENT SEARCH
 // ----------------------------------------------------------
@@ -922,62 +889,16 @@ function adminPortalFemale_(v) {
 }
 
 function adminPortalStudentObject_(r) {
-  var fullFee = Math.max(0, adminPortalNum_(r[12]));
-  var amount = adminPortalNum_(r[4]);
-
-  // Business rule: if School Fee is 0, the student is fully exempt.
-  // Therefore Amount = 0, Balance = 0 and Status = Paid.
-  if (fullFee === 0) {
-    amount = 0;
-  } else {
-    amount = Math.max(0, amount);
-  }
-
-  var remaining = fullFee === 0 ? 0 : Math.max(0, fullFee - amount);
-  var status = remaining === 0 ? 'Paid' : 'Pending';
-
   return {
     id:adminPortalText_(r[0]), name:adminPortalText_(r[1]), className:adminPortalText_(r[2]),
-    paymentType:adminPortalText_(r[3]), amount:amount, method:adminPortalText_(r[5]),
-    createdAt:adminPortalDate_(r[6]), status:status, cashier:adminPortalText_(r[8]),
+    paymentType:adminPortalText_(r[3]), amount:adminPortalNum_(r[4]), method:adminPortalText_(r[5]),
+    createdAt:adminPortalDate_(r[6]), status:adminPortalText_(r[7]), cashier:adminPortalText_(r[8]),
     other:adminPortalText_(r[9]), gender:adminPortalText_(r[10]), schoolYear:adminPortalText_(r[11]),
-    fullFee:fullFee, remaining:remaining, phone:adminPortalText_(r[14])
+    fullFee:adminPortalNum_(r[12]), remaining:adminPortalNum_(r[13]), phone:adminPortalText_(r[14])
   };
 }
 
-// Synchronize the zero-fee rule into the actual Students_Payment sheet.
-// This also repairs older rows that were previously saved as Pending with 0 fee.
-function adminPortalSyncZeroFeeStudents_() {
-  var sh = adminPortalSheet_();
-  var values = adminPortalReadRows_(sh,15);
-  var changed = 0;
-
-  for (var i = 1; i < values.length; i++) {
-    var row = values[i];
-    var id = adminPortalNormalizeId_(row[0]);
-    if (!id) continue;
-
-    var fullFee = Math.max(0, adminPortalNum_(row[12]));
-    if (fullFee !== 0) continue;
-
-    var needsFix = adminPortalNum_(row[4]) !== 0 ||
-                   adminPortalNum_(row[13]) !== 0 ||
-                   adminPortalText_(row[7]).toLowerCase() !== 'paid';
-
-    if (needsFix) {
-      sh.getRange(i + 1, 5).setValue(0);   // Amount
-      sh.getRange(i + 1, 8).setValue('Paid'); // Status
-      sh.getRange(i + 1, 14).setValue(0);  // Remaining / Balance
-      changed++;
-    }
-  }
-
-  if (changed) SpreadsheetApp.flush();
-  return changed;
-}
-
 function adminPortalDashboard_() {
-  adminPortalSyncZeroFeeStudents_();
   var sh=adminPortalSheet_(), values=adminPortalReadRows_(sh,15);
   var students=[], seen={};
   var total=0,female=0,collected=0,remaining=0,paid=0,pending=0,exempted=0,cash=0,qr=0;
@@ -1010,7 +931,6 @@ function adminPortalDashboard_() {
 }
 
 function adminPortalStudents_(filters) {
-  adminPortalSyncZeroFeeStudents_();
   filters=filters||{}; var sh=adminPortalSheet_(), values=adminPortalReadRows_(sh,15), out=[];
   var q=adminPortalText_(filters.search).toLowerCase(), cls=adminPortalText_(filters.className).toLowerCase(), st=adminPortalText_(filters.status).toLowerCase();
   for(var i=1;i<values.length;i++){
@@ -1039,6 +959,49 @@ function adminPortalNormalizePaymentMethod_(v) {
   return (s.indexOf('qr')>=0 || s.indexOf('khqr')>=0 || s.indexOf('ស្កេ')>=0) ? 'QR' : 'Cash';
 }
 
+/* ----------------------------------------------------------
+   STUDENT ID GENERATOR
+   Fix: the previous V2 backend called generateNextStudentId()
+   but that function was not defined in the combined backend.
+   This version generates the next AKKNGS-###### ID directly
+   from Students_Payment and guarantees it is unused.
+---------------------------------------------------------- */
+function generateNextStudentId() {
+  var sh = adminPortalSheet_();
+  var values = adminPortalReadRows_(sh, 15);
+  var maxNo = 0;
+
+  for (var i = 1; i < values.length; i++) {
+    var id = adminPortalText_(values[i][0]);
+    if (!id) continue;
+
+    // Accept the project's normal format: AKKNGS-000001
+    var m = id.match(/^AKKNGS-(\d+)$/i);
+    if (m) {
+      var n = parseInt(m[1], 10);
+      if (!isNaN(n) && n > maxNo) maxNo = n;
+    }
+  }
+
+  var candidateNo = maxNo + 1;
+  var candidate;
+
+  // Extra collision check in case IDs were manually entered out of sequence.
+  var used = {};
+  for (var j = 1; j < values.length; j++) {
+    var existing = adminPortalText_(values[j][0]).toUpperCase();
+    if (existing) used[existing] = true;
+  }
+
+  do {
+    candidate = 'AKKNGS-' + String(candidateNo).padStart(6, '0');
+    candidateNo++;
+  } while (used[candidate]);
+
+  return candidate;
+}
+
+
 function adminPortalSaveStudent_(p, session) {
   p=p||{};
   var sh=adminPortalSheet_(), values=adminPortalReadRows_(sh,15);
@@ -1048,7 +1011,7 @@ function adminPortalSaveStudent_(p, session) {
       if(adminPortalNormalizeId_(values[i][0])===id){rowIndex=i+1;break;}
     }
   }
-  if(rowIndex<0){ id=id||generateNextStudentId(); rowIndex=sh.getLastRow()+1; isNew=true; }
+  if(rowIndex<0){ id=id||generateNextStudentId(); rowIndex=Math.max(2,values.length+1); isNew=true; }
 
   var old=rowIndex<=values.length?values[rowIndex-1]:new Array(15).fill('');
   var row=old.slice(0,15); while(row.length<15) row.push('');
@@ -1071,8 +1034,7 @@ function adminPortalSaveStudent_(p, session) {
   row[14]=adminPortalText_(p.phone);
 
   if(isNew){
-    // If Full Year Fee is 0, this student is exempted: Amount/Balance = 0 and Paid.
-    amount = fullFee === 0 ? 0 : Math.max(0, Math.min(amount, fullFee));
+    amount=Math.max(0,Math.min(amount,fullFee));
     row[4]=amount;
     row[5]=method;
     row[6]=new Date();
@@ -1091,10 +1053,10 @@ function adminPortalSaveStudent_(p, session) {
   } else {
     // Editing student information must NOT create a duplicate payment history.
     // Keep the existing paid amount and payment totals intact.
-    var existingAmount = fullFee === 0 ? 0 : Math.max(0, adminPortalNum_(row[4]));
+    var existingAmount=adminPortalNum_(row[4]);
     row[4]=existingAmount;
     row[5]=adminPortalNormalizePaymentMethod_(row[5]);
-    row[13]=fullFee === 0 ? 0 : Math.max(0,fullFee-existingAmount);
+    row[13]=Math.max(0,fullFee-existingAmount);
     row[7]=row[13]>0?'Pending':'Paid';
     sh.getRange(rowIndex,1,1,15).setValues([row]);
   }
@@ -1160,18 +1122,6 @@ function adminPortalSavePayment_(p, session) {
   var values=adminPortalReadRows_(sh,15), studentRow=-1;
   for(var i=1;i<values.length;i++) if(adminPortalNormalizeId_(values[i][0])===studentId){studentRow=i+1;break;}
   if(studentRow<0) throw new Error('រកមិនឃើញសិស្ស: '+studentId);
-
-  // Zero-fee/exempted students must never receive a payment.
-  var studentCurrentRow = sh.getRange(studentRow,1,1,15).getValues()[0];
-  var studentFullFee = Math.max(0, adminPortalNum_(studentCurrentRow[12]));
-  if (studentFullFee === 0) {
-    studentCurrentRow[4] = 0;
-    studentCurrentRow[7] = 'Paid';
-    studentCurrentRow[13] = 0;
-    sh.getRange(studentRow,1,1,15).setValues([studentCurrentRow]);
-    throw new Error('សិស្សនេះមិនមានថ្លៃសិក្សា (0៛) ដូច្នេះមិនអាចកត់ត្រាការបង់ប្រាក់បានទេ។');
-  }
-
   var oldHistoryAmount=0, histRow=Number(p.rowNumber||0);
   if(histRow>=2 && histRow<=hs.getLastRow()){
     var oldHist=hs.getRange(histRow,1,1,7).getValues()[0];
@@ -1195,14 +1145,7 @@ function adminPortalDeletePayment_(rowNumber) {
   hs.deleteRow(rn);
   var sh=adminPortalSheet_(), values=adminPortalReadRows_(sh,15);
   for(var i=1;i<values.length;i++) if(adminPortalNormalizeId_(values[i][0])===studentId){
-    var row=values[i].slice();
-    var fee=Math.max(0,adminPortalNum_(row[12]));
-    var newAmount=fee===0 ? 0 : Math.max(0,adminPortalNum_(row[4])-oldAmount);
-    row[4]=newAmount;
-    row[13]=fee===0 ? 0 : Math.max(0,fee-newAmount);
-    row[7]=row[13]>0?'Pending':'Paid';
-    sh.getRange(i+1,1,1,15).setValues([row]);
-    break;
+    var row=values[i].slice(); var newAmount=Math.max(0,adminPortalNum_(row[4])-oldAmount); row[4]=newAmount; row[13]=Math.max(0,adminPortalNum_(row[12])-newAmount); row[7]=row[13]>0?'Pending':'Paid'; sh.getRange(i+1,1,1,15).setValues([row]); break;
   }
   return {success:true,message:'បានលុបប្រវត្តិបង់ប្រាក់រួចរាល់'};
 }
@@ -1287,4 +1230,179 @@ function adminPortalExportCsv_(filters) {
   var name='Admin_Students_'+Utilities.formatDate(new Date(),Session.getScriptTimeZone()||'Asia/Phnom_Penh','yyyyMMdd_HHmmss')+'.csv';
   var file=DriveApp.createFile(name,'\uFEFF'+lines.join('\n'),MimeType.CSV);
   return {success:true,name:name,url:file.getDownloadUrl()};
+}
+
+
+// ==========================================================
+// OFFICIAL DAILY / MONTHLY REPORTS
+// Source: Payment_History + Students_Payment
+// Each student is aggregated once per selected period.
+// QR and Cash are separated for official reporting.
+// ==========================================================
+
+function adminPortalReportParseDate_(v) {
+  if (v instanceof Date && !isNaN(v.getTime())) return v;
+
+  if (v === null || v === undefined || v === '') return null;
+
+  var s = String(v).trim();
+  if (!s) return null;
+
+  // ISO / Google Sheets timestamp first.
+  var d = new Date(s);
+  if (!isNaN(d.getTime())) return d;
+
+  // yyyy-mm-dd or yyyy/mm/dd
+  var ymd = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (ymd) {
+    return new Date(
+      Number(ymd[1]),
+      Number(ymd[2]) - 1,
+      Number(ymd[3])
+    );
+  }
+
+  // Cambodian/local display style: dd/mm/yyyy or dd-mm-yyyy.
+  var dmy = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
+  if (dmy) {
+    return new Date(
+      Number(dmy[3]),
+      Number(dmy[2]) - 1,
+      Number(dmy[1])
+    );
+  }
+
+  return null;
+}
+
+function adminPortalReportYmd_(d) {
+  return Utilities.formatDate(d, Session.getScriptTimeZone() || 'Asia/Phnom_Penh', 'yyyy-MM-dd');
+}
+
+function adminPortalReportYm_(d) {
+  return Utilities.formatDate(d, Session.getScriptTimeZone() || 'Asia/Phnom_Penh', 'yyyy-MM');
+}
+
+function adminPortalBuildReport_(startDate, endDate, periodLabel) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var hs = adminPortalFindSheet_('Payment_History');
+  var sh = adminPortalFindSheet_('Students_Payment');
+  if (!hs) throw new Error('រកមិនឃើញ Sheet Payment_History');
+  if (!sh) throw new Error('រកមិនឃើញ Sheet Students_Payment');
+
+  var hv = adminPortalReadRows_(hs, 7);
+  var sv = adminPortalReadRows_(sh, 15);
+
+  var students = {};
+  for (var i=1;i<sv.length;i++) {
+    var sr=sv[i];
+    var sid=adminPortalNormalizeId_(sr[0]);
+    if (!sid) continue;
+    students[sid.toLowerCase()] = {
+      id:sid,
+      name:adminPortalText_(sr[1]),
+      gender:adminPortalText_(sr[10]),
+      className:adminPortalText_(sr[2])
+    };
+  }
+
+  var grouped = {};
+  var cashiers = {};
+  var qrTotal = 0, cashTotal = 0;
+
+  var reportTz = Session.getScriptTimeZone() || 'Asia/Phnom_Penh';
+  var startKey = Utilities.formatDate(startDate, reportTz, 'yyyy-MM-dd');
+  var endKey = Utilities.formatDate(endDate, reportTz, 'yyyy-MM-dd');
+
+  for (var j=1;j<hv.length;j++) {
+    var r=hv[j];
+    var id=adminPortalNormalizeId_(r[0]);
+    if (!id) continue;
+
+    var dt=adminPortalReportParseDate_(r[2]);
+    if (!dt) continue;
+
+    var rowKey = Utilities.formatDate(dt, reportTz, 'yyyy-MM-dd');
+
+    // Compare calendar dates rather than JavaScript Date boundaries.
+    // This avoids timezone shifts for timestamps saved from the web app.
+    if (rowKey < startKey || rowKey >= endKey) continue;
+
+    var key=id.toLowerCase();
+    var method=adminPortalNormalizePaymentMethod_(r[5]);
+    var amount=Math.max(0, adminPortalNum_(r[4]));
+    var info=students[key] || {
+      id:id,
+      name:adminPortalText_(r[1]),
+      gender:'',
+      className:''
+    };
+
+    if (!grouped[key]) {
+      grouped[key] = {
+        id:info.id,
+        name:info.name,
+        gender:info.gender,
+        className:info.className,
+        qr:0,
+        cash:0,
+        total:0
+      };
+    }
+
+    if (method === 'QR') {
+      grouped[key].qr += amount;
+      qrTotal += amount;
+    } else {
+      grouped[key].cash += amount;
+      cashTotal += amount;
+    }
+    grouped[key].total += amount;
+
+    var cashier=adminPortalText_(r[6]);
+    if (cashier) cashiers[cashier]=true;
+  }
+
+  var rows=Object.keys(grouped).map(function(k){ return grouped[k]; });
+  rows.sort(function(a,b){ return String(a.name).localeCompare(String(b.name),'km'); });
+
+  var femaleCount=rows.filter(function(r){return adminPortalFemale_(r.gender);}).length;
+
+  return {
+    period:periodLabel,
+    studentCount:rows.length,
+    femaleCount:femaleCount,
+    total:qrTotal+cashTotal,
+    qrTotal:qrTotal,
+    cashTotal:cashTotal,
+    cashiers:Object.keys(cashiers),
+    rows:rows
+  };
+}
+
+function adminPortalDailyReport_(dateValue) {
+  var s=adminPortalText_(dateValue);
+  var d;
+  if (s && /^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    var p=s.split('-');
+    d=new Date(Number(p[0]),Number(p[1])-1,Number(p[2]));
+  } else {
+    d=new Date();
+  }
+  d.setHours(0,0,0,0);
+  var end=new Date(d.getTime()+24*60*60*1000);
+  return adminPortalBuildReport_(d,end,adminPortalReportYmd_(d));
+}
+
+function adminPortalMonthlyReport_(monthValue) {
+  var s=adminPortalText_(monthValue);
+  var y,m;
+  if (/^\d{4}-\d{2}$/.test(s)) {
+    var p=s.split('-'); y=Number(p[0]); m=Number(p[1])-1;
+  } else {
+    var now=new Date(); y=now.getFullYear(); m=now.getMonth();
+  }
+  var start=new Date(y,m,1); start.setHours(0,0,0,0);
+  var end=new Date(y,m+1,1); end.setHours(0,0,0,0);
+  return adminPortalBuildReport_(start,end,Utilities.formatDate(start,Session.getScriptTimeZone()||'Asia/Phnom_Penh','yyyy-MM'));
 }
